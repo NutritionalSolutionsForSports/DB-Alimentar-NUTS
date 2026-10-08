@@ -142,27 +142,39 @@
       if (/Informa[çc][ãa]o Nutricional|Ingredientes|Valor energ|Energia/i.test(d.body.innerText)) break;
       await dormir(500);
     }
-    // abrir separadores/acordeões de informação nutricional e ingredientes
-    const alvos = [...d.querySelectorAll("button,a,div,span,li,h2,h3")].filter((n) =>
-      n.children.length < 4 && /^(Informa[çc][ãa]o Nutricional|Tabela Nutricional|Ingredientes|Modo de Utiliza|Al[ée]rg|Composi[çc][ãa]o)/i.test((n.innerText || "").trim()));
-    for (const n of alvos.slice(0, 8)) { try { n.click(); } catch (e) {} await dormir(400); }
-    await dormir(1500);
+    // abrir a "Declaração Nutricional" (e outros painéis de informação) e esperar que a tabela apareça
+    const antes = w.performance.getEntriesByType("resource").length;
+    const RX = /^(Declara[çc][ãa]o Nutricional|Informa[çc][ãa]o Nutricional|Tabela Nutricional|Ingredientes|Modo de Utiliza[çc][ãa]o|Al[ée]rg[ée]nios|Composi[çc][ãa]o)$/i;
+    const alvos = [...d.querySelectorAll("button,a,div,span,li,h2,h3,h4,p")]
+      .filter((n) => RX.test((n.innerText || "").trim()))
+      .filter((n) => ![...n.children].some((c) => RX.test((c.innerText || "").trim())));   // o elemento mais interior
+    for (const n of alvos.slice(0, 6)) {
+      try { n.scrollIntoView(); n.click(); } catch (e) {}
+      for (let k = 0; k < 16; k++) {            // até 8 s
+        if (d.querySelector("table") || /\bkcal\b|Valor energ[ée]tico/i.test(d.body.innerText)) break;
+        await dormir(500);
+      }
+      await dormir(600);
+    }
+    await dormir(1000);
     const tabelas = [...d.querySelectorAll("table")].map((t) => t.outerHTML);
     const texto = d.body.innerText;
     // dados que o site carregou por trás (pedidos JSON)
     const pedidos = [];
+    let pedidosVistos = [];
     try {
       const ents = w.performance.getEntriesByType("resource").filter((e) => ["xmlhttprequest", "fetch"].includes(e.initiatorType) && e.name.includes("prozis.com"));
+      pedidosVistos = ents.map((e) => e.name);
       for (const e of ents.slice(0, 15)) {
         try {
           const r = await fetch(e.name, { credentials: "include" });
           const t = await r.text();
-          if (t.length < 400000 && /nutri|ingred|kcal|energ|alerg|allerg/i.test(t)) pedidos.push({ url: e.name, corpo: t });
+          if (r.ok && t.length < 400000 && /nutri|ingred|kcal|energ|alerg|allerg/i.test(t) && !/magic-cart/.test(e.name)) pedidos.push({ url: e.name, corpo: t });
         } catch (err) {}
       }
     } catch (err) {}
     const ld = [...d.querySelectorAll('script[type="application/ld+json"]')].map((s) => s.textContent);
-    return { titulo: d.title, ld, tabelas, texto: texto.slice(0, 60000), pedidos };
+    return { titulo: d.title, ld, tabelas, texto: texto.slice(0, 60000), pedidos, pedidosVistos, botoes: alvos.map((n) => n.innerText.trim()) };
   }
 
   const lista = Object.values(estado.produtos).slice(0, 3);
