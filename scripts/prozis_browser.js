@@ -1,8 +1,7 @@
 // Recolha Prozis no browser — DB Alimentar NUTS
-// Colar na Consola do Chrome/Edge com uma página da prozis.com aberta (ver instruções).
-// No fim descarrega automaticamente "prozis_dados.json.gz". Envia esse ficheiro ao Claude.
-// Se precisares de parar a meio, escreve  baixar()  na consola para descarregar o que já foi recolhido.
-// (A cada 100 produtos descarrega também uma cópia de segurança.)
+// Colar na Consola do Chrome/Edge com uma página da prozis.com aberta.
+// No fim descarrega "prozis_dados.json.gz" (e cópias de segurança a cada 100 produtos). Envia o último ao Claude.
+// Para descarregar a meio: escrever  baixar()  na consola.
 (async () => {
   const CATEGORIAS = [
     "/pt/pt/nutricao-desportiva/proteina",
@@ -17,7 +16,7 @@
     "/pt/pt/saude-e-emagrecimento/saude",
     "/pt/pt/saude-e-emagrecimento/vitaminas-minerais-e-ervas",
   ];
-  const ESPERA = 1500;
+  const ESPERA = 1200;
   const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
   const estado = { produtos: {}, paginas: [], erros: [] };
   window.__prozis = estado;
@@ -30,10 +29,8 @@
         const txt = await r.text();
         if (r.status === 200 && !/challenges\.cloudflare\.com\/cdn-cgi|cf-chl-|Just a moment/i.test(txt.slice(0, 5000))) return txt;
         if (r.status === 404) return null;
-        console.warn(`⚠️ ${r.status} em ${url} — a esperar ${espera / 1000}s (o site pediu para abrandar)`);
-      } catch (e) {
-        console.warn("⚠️ falha de ligação, a tentar outra vez", e);
-      }
+        console.warn(`⚠️ ${r.status} em ${url} — a esperar ${espera / 1000}s`);
+      } catch (e) { console.warn("⚠️ falha de ligação", e); }
       await dormir(espera);
       espera = Math.min(espera * 2, 600000);
     }
@@ -46,39 +43,19 @@
     let i = html.indexOf(marca);
     if (i < 0) return null;
     i += marca.length;
-    // extrair o objeto JSON equilibrando chavetas
     let nivel = 0, emTexto = false, esc = false;
     for (let j = i; j < html.length; j++) {
       const c = html[j];
-      if (emTexto) {
-        if (esc) esc = false;
-        else if (c === "\\") esc = true;
-        else if (c === '"') emTexto = false;
-      } else if (c === '"') emTexto = true;
+      if (emTexto) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') emTexto = false; }
+      else if (c === '"') emTexto = true;
       else if (c === "{") nivel++;
-      else if (c === "}") {
-        nivel--;
-        if (nivel === 0) {
-          try { return JSON.parse(html.slice(i, j + 1)).props.compProps.catalogData.wsData; } catch (e) { return null; }
-        }
-      }
+      else if (c === "}") { nivel--; if (nivel === 0) { try { return JSON.parse(html.slice(i, j + 1)).props.compProps.catalogData.wsData; } catch (e) { return null; } } }
     }
     return null;
   }
 
-  function reduzir(html) {
-    // guarda apenas o que interessa: dados estruturados, blocos de dados da página e o texto principal
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    const ld = [...doc.querySelectorAll('script[type="application/ld+json"]')].map((s) => s.textContent);
-    const vue = [...doc.querySelectorAll("script")].map((s) => s.textContent).filter((t) => /VueEs6\.render|__INITIAL|window\.__|productData|nutri/i.test(t));
-    doc.querySelectorAll("script,style,svg,noscript,link,iframe").forEach((n) => n.remove());
-    const corpo = doc.body ? doc.body.innerHTML : "";
-    return { titulo: doc.title, ld, vue, corpo };
-  }
-
   async function gz(texto) {
-    const cs = new CompressionStream("gzip");
-    const stream = new Blob([texto]).stream().pipeThrough(cs);
+    const stream = new Blob([texto]).stream().pipeThrough(new CompressionStream("gzip"));
     return await new Response(stream).blob();
   }
 
@@ -89,16 +66,16 @@
     a.download = "prozis_dados.json.gz";
     document.body.appendChild(a);
     a.click();
-    console.log(`✅ Descarregado prozis_dados.json.gz (${(blob.size / 1e6).toFixed(1)} MB) — envia ao Claude.`);
+    console.log(`✅ Descarregado prozis_dados.json.gz (${(blob.size / 1e6).toFixed(1)} MB)`);
   };
 
-  // 1) categorias
+  // 1) listas das categorias
   for (const cat of CATEGORIAS) {
     let total = 1;
     for (let n = 1; n <= total && n <= 60; n++) {
       const url = `${cat}?ls=popularity&pp=100&page=${n}`;
       const html = await obter(url);
-      await dormir(ESPERA + Math.random() * 1000);
+      await dormir(ESPERA);
       if (!html) break;
       const ws = dadosCatalogo(html);
       if (!ws) { console.warn("Sem dados de catálogo em", url); estado.paginas.push({ url, semDados: true }); break; }
@@ -111,11 +88,11 @@
           novos++;
         }
       }
-      console.log(`📂 ${cat} — página ${n}/${total}: ${novos} produtos novos (total ${Object.keys(estado.produtos).length})`);
+      console.log(`📂 ${cat} — página ${n}/${total}: ${novos} novos (total ${Object.keys(estado.produtos).length})`);
     }
   }
 
-  // 2) páginas de produto — abertas num iframe invisível para o site desenhar a tabela nutricional
+  // 2) cada produto, aberto num iframe invisível, com a "Declaração Nutricional" aberta
   const frame = document.createElement("iframe");
   frame.style.cssText = "position:fixed;left:-3000px;top:0;width:1400px;height:3000px;opacity:0;pointer-events:none;";
   document.body.appendChild(frame);
@@ -132,51 +109,34 @@
 
   async function recolherProduto(p) {
     await carregar(p.url);
-    const w = frame.contentWindow, d = frame.contentDocument;
+    const d = frame.contentDocument;
     if (!d || !d.body) return null;
     if (/Just a moment|cf-chl|challenges\.cloudflare/i.test(d.documentElement.innerHTML.slice(0, 20000))) return "bloqueado";
-    // esperar que a página desenhe o conteúdo
     for (let k = 0; k < 20; k++) {
-      if (/Informa[çc][ãa]o Nutricional|Ingredientes|Valor energ|Energia/i.test(d.body.innerText)) break;
+      if (/Declara[çc][ãa]o Nutricional|Informa[çc][ãa]o Nutricional|Ingredientes/i.test(d.body.innerText)) break;
       await dormir(500);
     }
-    // abrir a "Declaração Nutricional" (e outros painéis de informação) e esperar que a tabela apareça
-    const antes = w.performance.getEntriesByType("resource").length;
     const RX = /^(Declara[çc][ãa]o Nutricional|Informa[çc][ãa]o Nutricional|Tabela Nutricional|Ingredientes|Modo de Utiliza[çc][ãa]o|Al[ée]rg[ée]nios|Composi[çc][ãa]o)$/i;
     const alvos = [...d.querySelectorAll("button,a,div,span,li,h2,h3,h4,p")]
       .filter((n) => RX.test((n.innerText || "").trim()))
-      .filter((n) => ![...n.children].some((c) => RX.test((c.innerText || "").trim())));   // o elemento mais interior
+      .filter((n) => ![...n.children].some((c) => RX.test((c.innerText || "").trim())));
     for (const n of alvos.slice(0, 6)) {
       try { n.scrollIntoView(); n.click(); } catch (e) {}
-      for (let k = 0; k < 16; k++) {            // até 8 s
-        if (d.querySelector("table") || /\bkcal\b|Valor energ[ée]tico/i.test(d.body.innerText)) break;
+      for (let k = 0; k < 16; k++) {
+        if (d.querySelector("table") || /\bkcal\b|Valor energ[ée]tico|Doses por embalagem/i.test(d.body.innerText)) break;
         await dormir(500);
       }
-      await dormir(600);
+      await dormir(400);
     }
-    await dormir(1000);
-    const tabelas = [...d.querySelectorAll("table")].map((t) => t.outerHTML);
+    await dormir(600);
+    const tabelas = [...d.querySelectorAll("table")].map((t) => t.outerHTML).filter((t) => /kcal|Energia|Dose/i.test(t));
     const texto = d.body.innerText;
-    // dados que o site carregou por trás (pedidos JSON)
-    const pedidos = [];
-    let pedidosVistos = [];
-    try {
-      const ents = w.performance.getEntriesByType("resource").filter((e) => ["xmlhttprequest", "fetch"].includes(e.initiatorType) && e.name.includes("prozis.com"));
-      pedidosVistos = ents.map((e) => e.name);
-      for (const e of ents.slice(0, 15)) {
-        try {
-          const r = await fetch(e.name, { credentials: "include" });
-          const t = await r.text();
-          if (r.ok && t.length < 400000 && /nutri|ingred|kcal|energ|alerg|allerg/i.test(t) && !/magic-cart/.test(e.name)) pedidos.push({ url: e.name, corpo: t });
-        } catch (err) {}
-      }
-    } catch (err) {}
     const ld = [...d.querySelectorAll('script[type="application/ld+json"]')].map((s) => s.textContent);
-    return { titulo: d.title, ld, tabelas, texto: texto.slice(0, 60000), pedidos, pedidosVistos, botoes: alvos.map((n) => n.innerText.trim()) };
+    return { titulo: d.title, ld, tabelas, texto: texto.slice(0, 60000), botoes: alvos.map((n) => n.innerText.trim()) };
   }
 
   const lista = Object.values(estado.produtos);
-  console.log(`\n🔎 ${lista.length} produtos encontrados. A recolher cada um (demora)...`);
+  console.log(`\n🔎 ${lista.length} produtos. A recolher cada um (pode demorar 1-3 horas; deixa este separador aberto)...`);
   let i = 0;
   for (const p of lista) {
     i++;
@@ -188,13 +148,13 @@
       await dormir(60000);
     }
     if (r && r !== "bloqueado") p.pagina = r; else estado.erros.push(p.url);
-    const temTabela = r && r.tabelas && r.tabelas.length;
-    console.log(`[${i}/${lista.length}] ${p.pagina ? "ok" : "falhou"}${temTabela ? " (tabela ✔)" : ""} — ${p.nome}`);
+    const ok = r && r !== "bloqueado" && /kcal|Doses por embalagem|Ingredientes/i.test(r.texto);
+    console.log(`[${i}/${lista.length}] ${p.pagina ? "ok" : "falhou"}${ok ? " (declaração ✔)" : ""} — ${p.nome}`);
     document.title = `Prozis ${i}/${lista.length}`;
-    if (i % 100 === 0) await window.baixar();   // cópia de segurança a cada 100 produtos
-    await dormir(ESPERA + Math.random() * 1000);
+    if (i % 100 === 0) await window.baixar();
+    await dormir(ESPERA);
   }
 
-  console.log(`\n🏁 Terminado. ${estado.erros.length} páginas falharam.`);
+  console.log(`\n🏁 Terminado. ${estado.erros.length} falharam. A descarregar o ficheiro final...`);
   await window.baixar();
 })();
