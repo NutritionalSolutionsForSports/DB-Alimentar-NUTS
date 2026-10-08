@@ -46,7 +46,8 @@ SECCOES = {
     "roupa", "moda", "desporto", "acessorios", "equipamento", "casa", "tecnologia",
     "beleza", "cosmetica", "marcas", "brands", "promocoes", "outlet", "blog", "ajuda",
     "help", "account", "conta", "checkout", "cart", "carrinho", "search", "pesquisa",
-    "info", "sobre", "c", "l", "lp", "campaign", "campanhas",
+    "info", "sobre", "c", "l", "lp", "campaign", "campanhas", "customerservice", "site",
+    "menu", "catalog", "osistics", "club", "app", "stores", "lojas", "gift", "cart",
 }
 
 HEADERS = {
@@ -92,14 +93,19 @@ def obter(url, tentativas=4):
 def com_pagina(url, n):
     p = urlparse(url)
     q = dict(parse_qsl(p.query))
+    q["ls"] = "popularity"
+    q["pp"] = "100"          # 100 produtos por página
     q["page"] = str(n)
     return urlunparse(p._replace(query=urlencode(q)))
 
 
 def links_produto(html, base):
-    """Extrai links que parecem páginas de produto: /pt/pt/<marca>/<produto>"""
+    """Extrai links de produto (/pt/pt/<marca>/<produto>) do HTML e dos dados JSON embutidos."""
+    candidatos = re.findall(r'href="([^"#]+)"', html)
+    # links dentro dos dados do catálogo (formato "url":"\/pt\/pt\/marca\/produto")
+    candidatos += [x.replace("\\/", "/") for x in re.findall(r'"url"\s*:\s*"(\\?/pt\\?/pt\\?/[^"]+)"', html)]
     out = set()
-    for href in re.findall(r'href="([^"#]+)"', html):
+    for href in candidatos:
         u = urljoin(base, href.split("?")[0])
         p = urlparse(u)
         if p.netloc != "www.prozis.com":
@@ -108,6 +114,11 @@ def links_produto(html, base):
         if len(partes) == 4 and partes[0] == "pt" and partes[1] == "pt" and partes[2] not in SECCOES:
             out.add(f"https://www.prozis.com/{'/'.join(partes)}")
     return out
+
+
+def total_paginas(html):
+    m = re.search(r'"totalPages"\s*:\s*(\d+)', html)
+    return int(m.group(1)) if m else None
 
 
 def nome_ficheiro(url):
@@ -122,15 +133,20 @@ def main():
     produtos = {}
     if os.path.exists(lista_path):
         for linha in open(lista_path, encoding="utf-8"):
-            u, c = linha.rstrip("\n").split("\t")
-            produtos[u] = c
+            if "\t" in linha:
+                u, c = linha.rstrip("\n").split("\t")
+                produtos[u] = c
+    if produtos:
         log(f"Lista de produtos já existente: {len(produtos)} produtos (a reutilizar).")
     else:
         for cat in CATEGORIAS:
             log(f"\nCategoria: {cat}")
             vistos = set()
+            maxp = MAX_PAGINAS_CAT
             for n in range(1, MAX_PAGINAS_CAT + 1):
-                url = cat if n == 1 else com_pagina(cat, n)
+                if n > maxp:
+                    break
+                url = com_pagina(cat, n)
                 cod, html = obter(url)
                 time.sleep(ESPERA + random.random())
                 if cod != 200 or not html:
@@ -139,8 +155,11 @@ def main():
                 # guarda também a página da categoria (útil para o Claude)
                 with open(os.path.join(PASTA, "cat_" + nome_ficheiro(url)), "w", encoding="utf-8") as f:
                     f.write(f"<!-- URL: {url} -->\n" + html)
+                tp = total_paginas(html)
+                if tp:
+                    maxp = tp
                 novos = links_produto(html, url) - vistos
-                log(f"   página {n}: {len(novos)} produtos novos")
+                log(f"   página {n}{'/' + str(tp) if tp else ''}: {len(novos)} produtos novos")
                 if not novos:
                     break
                 vistos |= novos
