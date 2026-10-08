@@ -20,9 +20,9 @@
   const estado = JSON.parse(txt);
   window.__prozis = estado;
   const todos = Object.values(estado.produtos);
-  const lista = todos.filter((p) => !p.pagina);
+  const lista = todos.filter((p) => !p.pagina && !p.saltado);
   estado.erros = [];
-  console.log(`📦 Ficheiro "${ficheiro.name}": ${todos.length} produtos, ${todos.length - lista.length} já recolhidos, faltam ${lista.length}.`);
+  console.log(`📦 Ficheiro "${ficheiro.name}": ${todos.length} produtos, ${todos.length - lista.length} já recolhidos ou saltados, faltam ${lista.length}.`);
 
   // impedir que alguma página de produto faça sair desta página
   window.addEventListener("beforeunload", (e) => { e.preventDefault(); e.returnValue = ""; });
@@ -42,10 +42,15 @@
   };
 
   // 2) iframe "fechado": a página do produto não consegue mexer nesta página
-  const frame = document.createElement("iframe");
-  frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
-  frame.style.cssText = "position:fixed;left:-3000px;top:0;width:1400px;height:3000px;opacity:0;pointer-events:none;";
-  document.body.appendChild(frame);
+  let frame;
+  function novoFrame() {
+    if (frame) { try { frame.src = "about:blank"; } catch (e) {} frame.remove(); }
+    frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
+    frame.style.cssText = "position:fixed;left:-3000px;top:0;width:1400px;height:3000px;opacity:0;pointer-events:none;";
+    document.body.appendChild(frame);
+  }
+  novoFrame();
 
   function carregar(url) {
     return new Promise((resolve) => {
@@ -92,16 +97,19 @@
     i++;
     let r = null;
     for (let t = 0; t < 4; t++) {
-      r = await recolherProduto(p);
+      // vigia: se um produto ficar preso mais de 2,5 minutos, é saltado
+      r = await Promise.race([recolherProduto(p), dormir(150000).then(() => "preso")]);
+      if (r === "preso") { novoFrame(); break; }
       if (r && r !== "bloqueado") break;
       console.warn(`⚠️ página não carregou (${p.nome}) — a esperar 60s`);
       await dormir(60000);
     }
-    if (r && r !== "bloqueado") p.pagina = r; else estado.erros.push(p.url);
-    const ok = r && r !== "bloqueado" && /kcal|Doses por embalagem|Ingredientes/i.test(r.texto);
-    console.log(`[${i}/${lista.length}] ${p.pagina ? "ok" : "falhou"}${ok ? " (declaração ✔)" : ""} — ${p.nome}`);
+    if (r === "preso") { p.saltado = true; estado.erros.push(p.url); console.warn(`⏭️ [${i}/${lista.length}] preso, saltado — ${p.nome}`); }
+    else if (r && r !== "bloqueado") p.pagina = r; else estado.erros.push(p.url);
+    const ok = r && typeof r === "object" && /kcal|Doses por embalagem|Ingredientes/i.test(r.texto);
+    if (r !== "preso") console.log(`[${i}/${lista.length}] ${p.pagina ? "ok" : "falhou"}${ok ? " (declaração ✔)" : ""} — ${p.nome}`);
     document.title = `Prozis resto ${i}/${lista.length}`;
-    if (i % 100 === 0) await window.baixar();
+    if (i % 25 === 0) await window.baixar();
     await dormir(ESPERA);
   }
   console.log(`\n🏁 Terminado. ${estado.erros.length} falharam. A descarregar o ficheiro final...`);
