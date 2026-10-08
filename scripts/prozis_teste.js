@@ -1,4 +1,4 @@
-// Recolha Prozis no browser — DB Alimentar NUTS
+// TESTE (3 produtos) — Recolha Prozis no browser — DB Alimentar NUTS
 // Colar na Consola do Chrome/Edge com uma página da prozis.com aberta (ver instruções).
 // No fim descarrega automaticamente "prozis_dados.json.gz". Envia esse ficheiro ao Claude.
 // Se precisares de parar a meio, escreve  baixar()  na consola para descarregar o que já foi recolhido.
@@ -6,6 +6,8 @@
 (async () => {
   const CATEGORIAS = [
     "/pt/pt/nutricao-desportiva/proteina",
+  ];
+  const _resto = [
     "/pt/pt/nutricao-desportiva/queimadores-de-gordura-e-definicao-muscular",
     "/pt/pt/nutricao-desportiva/desenvolvimento-muscular",
     "/pt/pt/nutricao-desportiva/pre-intra-e-pos-treino",
@@ -86,7 +88,7 @@
     const blob = await gz(JSON.stringify(estado));
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "prozis_dados.json.gz";
+    a.download = "prozis_teste.json.gz";
     document.body.appendChild(a);
     a.click();
     console.log(`✅ Descarregado prozis_dados.json.gz (${(blob.size / 1e6).toFixed(1)} MB) — envia ao Claude.`);
@@ -95,7 +97,7 @@
   // 1) categorias
   for (const cat of CATEGORIAS) {
     let total = 1;
-    for (let n = 1; n <= total && n <= 60; n++) {
+    for (let n = 1; n <= 1; n++) {
       const url = `${cat}?ls=popularity&pp=100&page=${n}`;
       const html = await obter(url);
       await dormir(ESPERA + Math.random() * 1000);
@@ -163,7 +165,7 @@
     return { titulo: d.title, ld, tabelas, texto: texto.slice(0, 60000), pedidos };
   }
 
-  const lista = Object.values(estado.produtos);
+  const lista = Object.values(estado.produtos).slice(0, 3);
   console.log(`\n🔎 ${lista.length} produtos encontrados. A recolher cada um (demora)...`);
   let i = 0;
   for (const p of lista) {
